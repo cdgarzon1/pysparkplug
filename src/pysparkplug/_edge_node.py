@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import threading
 from typing import Callable, Iterable, Optional
 
 from pysparkplug._client import Client
@@ -25,6 +26,7 @@ from pysparkplug._types import Self
 __all__ = ["Device", "EdgeNode"]
 logger = logging.getLogger(__name__)
 BD_SEQ = "bdSeq"
+NODE_CONTROL_REBIRTH = "Node Control/Rebirth"
 SEQ_LIMIT = 256
 
 
@@ -59,9 +61,12 @@ class EdgeNode:
     _client: Client
 
     _bd_seq_metric: Metric
+    _active_bd_seq_metric: Metric  # Preserve the active birth bdSeq
+    _rebirth_metric: Metric
     __seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     __bd_seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     _connected: bool = False
+    _rebirth_inprogress: bool = False
 
     def __init__(
         self,
@@ -76,6 +81,7 @@ class EdgeNode:
         self._setup_metrics(metrics)
         self._devices = {}
         self._client = client if client is not None else Client()
+        self._birthseq_lock = threading.Lock()
 
         # Subscribe to NCMD
         n_cmd_topic = Topic(
@@ -83,15 +89,22 @@ class EdgeNode:
             group_id=self.group_id,
             edge_node_id=self.edge_node_id,
         )
+
+        def cb(
+            _: EdgeNode, message: Message,
+        ) -> None:
+            self._handle_ncmd(message)
+            cmd_callback(self, message) 
+
         self.subscribe(
             topic=n_cmd_topic,
             qos=QoS.AT_LEAST_ONCE,
-            callback=lambda _, message: cmd_callback(self, message),
+            callback=cb,
         )
 
     def _setup_metrics(self, metrics: Iterable[Metric]) -> None:
         self._metrics = {}
-        for metric in metrics:
+        for metric in (*metrics, *self._builtin_metrics()):
             if metric.name is None:
                 raise ValueError(
                     f"Metric {metric} must have a defined name when provided to an Edge Node"
@@ -101,6 +114,20 @@ class EdgeNode:
                     f"Metric {metric} must have a defined datatype when provided to an Edge Node"
                 )
             self._metrics[metric.name] = metric
+
+    def _builtin_metrics(self) -> Iterable[Metric]:
+        """Get the built-in metrics for the edge node
+
+        Returns:
+            an iterable of built-in metrics
+        """
+        rebirth_metric = Metric(
+            timestamp=None,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=False,
+        )
+        return (rebirth_metric,)
 
     def _setup_will(self) -> None:
         """Set the bdSeq metric and set the will with an NDEATH message with
@@ -151,23 +178,46 @@ class EdgeNode:
 
         # Setup will for next connection
         self._setup_will()
+        self._active_bd_seq_metric = self._bd_seq_metric
 
         def callback(client: Client) -> None:
             self._connected = True
             # Reset seq cycler
             self.__seq_cycler = itertools.cycle(range(SEQ_LIMIT))
 
+            self._active_bd_seq_metric = self._bd_seq_metric
+            self._birth()
+
+            # Setup will for next connection
+            self._setup_will()
+
+        self._client.connect(
+            host,
+            port=port,
+            keepalive=keepalive,
+            bind_address=bind_address,
+            blocking=blocking,
+            callback=callback,
+        )
+
+    def _birth(self) -> None:
+        """Perform a node birth sequence by publishing NBIRTH and DBIRTH messages"""
+        
+        if not self._connected:
+            # not connected, cannot publish birth messages
+            return
+        with self._birthseq_lock:
             # Publish NBIRTH
             n_birth_topic = Topic(
                 message_type=MessageType.NBIRTH,
                 group_id=self.group_id,
                 edge_node_id=self.edge_node_id,
             )
-            metrics = (*self._metrics.values(), self._bd_seq_metric)
+            metrics = (*self._metrics.values(), self._active_bd_seq_metric)
             n_birth = NBirth(
                 timestamp=get_current_timestamp(), seq=self._seq, metrics=metrics
             )
-            client.publish(
+            self._client.publish(
                 Message(
                     topic=n_birth_topic,
                     payload=n_birth,
@@ -190,7 +240,7 @@ class EdgeNode:
                     seq=self._seq,
                     metrics=tuple(device.metrics.values()),
                 )
-                client.publish(
+                self._client.publish(
                     Message(
                         topic=d_birth_topic,
                         payload=d_birth,
@@ -200,17 +250,28 @@ class EdgeNode:
                     include_dtypes=True,
                 )
 
-            # Setup will for next connection
-            self._setup_will()
+    def _handle_ncmd(self, message: Message) -> None:
+        """Handle an incoming NCMD message
 
-        self._client.connect(
-            host,
-            port=port,
-            keepalive=keepalive,
-            bind_address=bind_address,
-            blocking=blocking,
-            callback=callback,
-        )
+        Args:
+            message:
+                the incoming NCMD message
+
+        """
+        logger.info(f"Received NCMD message: {message}")
+        for metric in message.payload.metrics: # type: ignore[attr-defined]
+            if metric.name == NODE_CONTROL_REBIRTH and metric.value is True:
+                self._rebirth()
+    
+    def _rebirth(self) -> None:
+        """Perform a node rebirth using the same bdSeq as the original birth"""
+        if not self._connected:
+            return
+        if self._active_bd_seq_metric is None:
+            # No active bdSeq means we haven't birthed yet - this shouldn't happen
+            logger.warning("Rebirth requested but no active birth session exists")
+            return
+        self._birth()
 
     def disconnect(self) -> None:
         """Disconnect from the broker cleanly."""
@@ -221,7 +282,7 @@ class EdgeNode:
                 edge_node_id=self.edge_node_id,
             )
             n_death = NDeath(
-                timestamp=get_current_timestamp(), bd_seq_metric=self._bd_seq_metric
+                timestamp=get_current_timestamp(), bd_seq_metric=self._active_bd_seq_metric
             )
             ndeath_message = Message(
                 topic=n_death_topic, payload=n_death, qos=QoS.AT_MOST_ONCE, retain=False
@@ -256,26 +317,27 @@ class EdgeNode:
             callback=lambda _, message: device.cmd_callback(self, message),
         )
         if self._connected:
-            d_birth_topic = Topic(
-                message_type=MessageType.DBIRTH,
-                group_id=self.group_id,
-                edge_node_id=self.edge_node_id,
-                device_id=device.device_id,
-            )
-            d_birth = DBirth(
-                timestamp=get_current_timestamp(),
-                seq=self._seq,
-                metrics=tuple(device.metrics.values()),
-            )
-            self._client.publish(
-                Message(
-                    topic=d_birth_topic,
-                    payload=d_birth,
-                    qos=QoS.AT_MOST_ONCE,
-                    retain=False,
-                ),
-                include_dtypes=True,
-            )
+            with self._birthseq_lock:
+                d_birth_topic = Topic(
+                    message_type=MessageType.DBIRTH,
+                    group_id=self.group_id,
+                    edge_node_id=self.edge_node_id,
+                    device_id=device.device_id,
+                )
+                d_birth = DBirth(
+                    timestamp=get_current_timestamp(),
+                    seq=self._seq,
+                    metrics=tuple(device.metrics.values()),
+                )
+                self._client.publish(
+                    Message(
+                        topic=d_birth_topic,
+                        payload=d_birth,
+                        qos=QoS.AT_MOST_ONCE,
+                        retain=False,
+                    ),
+                    include_dtypes=True,
+                )
 
     def deregister(self, device_id: str) -> None:
         """Remove a device from the edge node, sending a DDeath if the edge node is online.
@@ -292,25 +354,26 @@ class EdgeNode:
             ) from exc
 
         if self._connected:
-            d_death_topic = Topic(
-                message_type=MessageType.DDEATH,
-                group_id=self.group_id,
-                edge_node_id=self.edge_node_id,
-                device_id=device_id,
-            )
-            d_death = DDeath(
-                timestamp=get_current_timestamp(),
-                seq=self._seq,
-            )
-            self._client.publish(
-                Message(
-                    topic=d_death_topic,
-                    payload=d_death,
-                    qos=QoS.AT_MOST_ONCE,
-                    retain=False,
-                ),
-                include_dtypes=True,
-            )
+            with self._birthseq_lock:
+                d_death_topic = Topic(
+                    message_type=MessageType.DDEATH,
+                    group_id=self.group_id,
+                    edge_node_id=self.edge_node_id,
+                    device_id=device_id,
+                )
+                d_death = DDeath(
+                    timestamp=get_current_timestamp(),
+                    seq=self._seq,
+                )
+                self._client.publish(
+                    Message(
+                        topic=d_death_topic,
+                        payload=d_death,
+                        qos=QoS.AT_MOST_ONCE,
+                        retain=False,
+                    ),
+                    include_dtypes=True,
+                )
 
         d_cmd_topic = Topic(
             message_type=MessageType.DCMD,
@@ -389,18 +452,20 @@ class EdgeNode:
                 )
             self._metrics[metric.name] = metric
 
-        topic = Topic(
-            message_type=MessageType.NDATA,
-            group_id=self.group_id,
-            edge_node_id=self.edge_node_id,
-        )
-        n_data = NData(
-            timestamp=get_current_timestamp(), seq=self._seq, metrics=tuple(metrics)
-        )
-        self._client.publish(
-            Message(topic=topic, payload=n_data, qos=QoS.AT_MOST_ONCE, retain=False),
-            include_dtypes=True,
-        )
+        if not self._birthseq_lock.locked():
+            # only send NDATA if we are not in the middle of a birth sequence
+            topic = Topic(
+                message_type=MessageType.NDATA,
+                group_id=self.group_id,
+                edge_node_id=self.edge_node_id,
+            )
+            n_data = NData(
+                timestamp=get_current_timestamp(), seq=self._seq, metrics=tuple(metrics)
+            )
+            self._client.publish(
+                Message(topic=topic, payload=n_data, qos=QoS.AT_MOST_ONCE, retain=False),
+                include_dtypes=True,
+            )
 
     def update_device(self, device_id: str, metrics: Iterable[Metric]) -> None:
         """Update some (or all) of the metrics associated with the provided device_id
@@ -419,19 +484,20 @@ class EdgeNode:
                 "registered to this edge node"
             ) from exc
         device.update(metrics)
-        d_data_topic = Topic(
-            message_type=MessageType.DDATA,
-            group_id=self.group_id,
-            edge_node_id=self.edge_node_id,
-            device_id=device_id,
-        )
-        d_data = DData(get_current_timestamp(), seq=self._seq, metrics=tuple(metrics))
-        self._client.publish(
-            Message(
-                topic=d_data_topic, payload=d_data, qos=QoS.AT_MOST_ONCE, retain=False
-            ),
-            include_dtypes=True,
-        )
+        if not self._birthseq_lock.locked():
+            d_data_topic = Topic(
+                message_type=MessageType.DDATA,
+                group_id=self.group_id,
+                edge_node_id=self.edge_node_id,
+                device_id=device_id,
+            )
+            d_data = DData(get_current_timestamp(), seq=self._seq, metrics=tuple(metrics))
+            self._client.publish(
+                Message(
+                    topic=d_data_topic, payload=d_data, qos=QoS.AT_MOST_ONCE, retain=False
+                ),
+                include_dtypes=True,
+            )
 
     @property
     def _seq(self) -> int:
