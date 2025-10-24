@@ -58,3 +58,7 @@ class Message:
             qos=QoS(mqtt_message.qos),
             retain=mqtt_message.retain,
         )
+
+    def __str__(self) -> str:
+        return (f"Message(topic={self.topic}, " 
+                f"qos={self.qos}, retain={self.retain}, payload={self.payload})")

@@ -18,7 +18,7 @@ from pysparkplug._datatype import DataType
 from pysparkplug._enums import MessageType, QoS
 from pysparkplug._message import Message
 from pysparkplug._metric import Metric
-from pysparkplug._payload import DBirth, DData, DDeath, NBirth, NData, NDeath
+from pysparkplug._payload import DBirth, DData, DDeath, NBirth, NData, NDeath, NCmd
 from pysparkplug._time import get_current_timestamp
 from pysparkplug._topic import Topic
 from pysparkplug._types import Self
@@ -94,7 +94,7 @@ class EdgeNode:
             _: EdgeNode, message: Message,
         ) -> None:
             self._handle_ncmd(message)
-            cmd_callback(self, message) 
+            cmd_callback(self, message)
 
         self.subscribe(
             topic=n_cmd_topic,
@@ -182,8 +182,6 @@ class EdgeNode:
 
         def callback(client: Client) -> None:
             self._connected = True
-            # Reset seq cycler
-            self.__seq_cycler = itertools.cycle(range(SEQ_LIMIT))
 
             self._active_bd_seq_metric = self._bd_seq_metric
             self._birth()
@@ -207,6 +205,9 @@ class EdgeNode:
             # not connected, cannot publish birth messages
             return
         with self._birthseq_lock:
+            # Reset seq cycler
+            self.__seq_cycler = itertools.cycle(range(SEQ_LIMIT))
+
             # Publish NBIRTH
             n_birth_topic = Topic(
                 message_type=MessageType.NBIRTH,
@@ -258,11 +259,24 @@ class EdgeNode:
                 the incoming NCMD message
 
         """
+        if not isinstance(message.payload, NCmd):
+            logger.error(f"Received invalid NCMD payload type: {type(message.payload)}")
+            return
+
         logger.info(f"Received NCMD message: {message}")
-        for metric in message.payload.metrics: # type: ignore[attr-defined]
-            if metric.name == NODE_CONTROL_REBIRTH and metric.value is True:
-                self._rebirth()
-    
+
+        # Check for rebirth command
+        for metric in message.payload.metrics:  # type: ignore[attr-defined]
+            if (
+                metric.name == NODE_CONTROL_REBIRTH  
+                and metric.value is True 
+                and not self._rebirth_inprogress
+            ):
+                # This is the network thread so we spawn a new thread to handle rebirth
+                rebirth_thread = threading.Thread(target=self._rebirth)
+                rebirth_thread.start()
+                break
+
     def _rebirth(self) -> None:
         """Perform a node rebirth using the same bdSeq as the original birth"""
         if not self._connected:
@@ -271,7 +285,9 @@ class EdgeNode:
             # No active bdSeq means we haven't birthed yet - this shouldn't happen
             logger.warning("Rebirth requested but no active birth session exists")
             return
+        self._rebirth_inprogress = True
         self._birth()
+        self._rebirth_inprogress = False
 
     def disconnect(self) -> None:
         """Disconnect from the broker cleanly."""
@@ -452,7 +468,7 @@ class EdgeNode:
                 )
             self._metrics[metric.name] = metric
 
-        if not self._birthseq_lock.locked():
+        with self._birthseq_lock:
             # only send NDATA if we are not in the middle of a birth sequence
             topic = Topic(
                 message_type=MessageType.NDATA,
@@ -484,7 +500,7 @@ class EdgeNode:
                 "registered to this edge node"
             ) from exc
         device.update(metrics)
-        if not self._birthseq_lock.locked():
+        with self._birthseq_lock:
             d_data_topic = Topic(
                 message_type=MessageType.DDATA,
                 group_id=self.group_id,
