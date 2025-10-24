@@ -63,10 +63,11 @@ class EdgeNode:
     _bd_seq_metric: Metric
     _active_bd_seq_metric: Metric  # Preserve the active birth bdSeq
     _rebirth_metric: Metric
+    _birthseq_lock: threading.Lock    
+    _rebirth_lock: threading.Lock
     __seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     __bd_seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     _connected: bool = False
-    _rebirth_inprogress: bool = False
 
     def __init__(
         self,
@@ -82,6 +83,7 @@ class EdgeNode:
         self._devices = {}
         self._client = client if client is not None else Client()
         self._birthseq_lock = threading.Lock()
+        self._rebirth_lock = threading.Lock()
 
         # Subscribe to NCMD
         n_cmd_topic = Topic(
@@ -270,7 +272,7 @@ class EdgeNode:
             if (
                 metric.name == NODE_CONTROL_REBIRTH  
                 and metric.value is True 
-                and not self._rebirth_inprogress
+                and not self._rebirth_lock.locked()
             ):
                 # This is the network thread so we spawn a new thread to handle rebirth
                 rebirth_thread = threading.Thread(target=self._rebirth)
@@ -279,15 +281,19 @@ class EdgeNode:
 
     def _rebirth(self) -> None:
         """Perform a node rebirth using the same bdSeq as the original birth"""
-        if not self._connected:
+
+        # there could be multiple rebirth commands received in quick succession,
+        # so we use a lock to ensure only one rebirth happens at a time and we 
+        # ignore the rest
+        if self._rebirth_lock.acquire(blocking=False):
+            try:
+                if self._connected:
+                    self._birth()
+            finally:
+                self._rebirth_lock.release()
+        else:
+            logger.info("Rebirth already in progress, ignoring additional rebirth command")
             return
-        if self._active_bd_seq_metric is None:
-            # No active bdSeq means we haven't birthed yet - this shouldn't happen
-            logger.warning("Rebirth requested but no active birth session exists")
-            return
-        self._rebirth_inprogress = True
-        self._birth()
-        self._rebirth_inprogress = False
 
     def disconnect(self) -> None:
         """Disconnect from the broker cleanly."""
