@@ -186,7 +186,7 @@ class Client:
             self._subscribe(topic=topic, qos=qos)
 
     def _on_disconnect(self, rc: int) -> None:
-        if ErrorCode(rc) != ErrorCode.SUCCESS: 
+        if ErrorCode(rc) != ErrorCode.SUCCESS:
             logger.warning(f"Unexpected disconnect: {ErrorCode(rc)}")
         else:
             logger.info("Clean disconnect")

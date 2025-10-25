@@ -16,19 +16,20 @@ import random
 import threading
 import time
 import unittest
+import uuid
 from typing import Any, cast
+from unittest.mock import MagicMock
+
 import paho.mqtt.client as mqtt
-from unittest.mock import MagicMock, patch
 
 from pysparkplug._client import Client
 from pysparkplug._datatype import DataType
-from pysparkplug._edge_node import EdgeNode, Device, NODE_CONTROL_REBIRTH
+from pysparkplug._edge_node import NODE_CONTROL_REBIRTH, Device, EdgeNode
 from pysparkplug._enums import MessageType, QoS
 from pysparkplug._message import Message
 from pysparkplug._metric import Metric
-from pysparkplug._payload import NBirth, NCmd, NDeath, NData
+from pysparkplug._payload import NBirth, NCmd
 from pysparkplug._topic import Topic
-import uuid
 
 GROUP_ID = "test_group"
 EDGE_NODE_ID = "test_edge_node"
@@ -42,22 +43,38 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         self.client = Client()
         self.mock_publish = MagicMock()
         self.client.publish = self.mock_publish
-        
+
         # Track will message while allowing original set_will to execute
         self.original_set_will = self.client.set_will
         self.mock_set_will = MagicMock()
+
         def set_will_and_track(message: Message | None) -> None:
             self.mock_set_will(message)
             return self.original_set_will(message)
+
         self.client.set_will = set_will_and_track
 
-        self.test_edge_metric = Metric(timestamp=123, name="test_edge_node_metric", datatype=DataType.INT32, value=42)
-        self.test_dev_metric = Metric(timestamp=123, name="test_device_metric", datatype=DataType.INT32, value=1)
+        self.test_edge_metric = Metric(
+            timestamp=123,
+            name="test_edge_node_metric",
+            datatype=DataType.INT32,
+            value=42,
+        )
+        self.test_dev_metric = Metric(
+            timestamp=123, name="test_device_metric", datatype=DataType.INT32, value=1
+        )
 
-        self.edge_node = EdgeNode(group_id=GROUP_ID, edge_node_id=EDGE_NODE_ID, metrics=[self.test_edge_metric], client=self.client)
-        
+        self.edge_node = EdgeNode(
+            group_id=GROUP_ID,
+            edge_node_id=EDGE_NODE_ID,
+            metrics=[self.test_edge_metric],
+            client=self.client,
+        )
+
         for device_id in range(5):
-            device = Device(device_id=f"test_device{device_id}", metrics=[self.test_dev_metric])
+            device = Device(
+                device_id=f"test_device{device_id}", metrics=[self.test_dev_metric]
+            )
             self.edge_node.register(device)
 
     def test_nbirth_rebirth_metric_requirements(self):
@@ -86,7 +103,9 @@ class TestEdgeNodeRebirth(unittest.TestCase):
             time.sleep(0.5)
 
         # Find NBIRTH message
-        birth_msg = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        birth_msg = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         birth_payload = cast(NBirth, birth_msg.payload)
         self.assertEqual(birth_payload.seq, 0, "NBIRTH must have seq=0")
 
@@ -97,16 +116,29 @@ class TestEdgeNodeRebirth(unittest.TestCase):
                 rebirth_metric = m
             elif m.name == "bdSeq":
                 bdseq_metric = m
-        self.assertEqual(bdseq_metric.value, 
-                         initial_will_message.payload.bd_seq_metric.value, 
-                         "bdSeq in NBIRTH must match that in the will message")
-        
+        self.assertEqual(
+            bdseq_metric.value,  # type: ignore[reportOptionalMemberAccess]
+            initial_will_message.payload.bd_seq_metric.value,
+            "bdSeq in NBIRTH must match that in the will message",
+        )
 
         # Verify rebirth metric exists and meets requirements
-        self.assertIsNotNone(rebirth_metric, "NBIRTH must include Node Control/Rebirth metric")
-        self.assertIsNone(rebirth_metric.alias, "Node Control/Rebirth must not use aliases")
-        self.assertEqual(rebirth_metric.datatype, DataType.BOOLEAN, "Node Control/Rebirth must be Boolean type")
-        self.assertFalse(rebirth_metric.value, "Node Control/Rebirth must be False in NBIRTH")
+        self.assertIsNotNone(
+            rebirth_metric, "NBIRTH must include Node Control/Rebirth metric"
+        )
+        self.assertIsNone(
+            rebirth_metric.alias,  # type: ignore[reportOptionalMemberAccess]
+            "Node Control/Rebirth must not use aliases",
+        )
+        self.assertEqual(
+            rebirth_metric.datatype,  # type: ignore[reportOptionalMemberAccess]
+            DataType.BOOLEAN,
+            "Node Control/Rebirth must be Boolean type",
+        )
+        self.assertFalse(
+            rebirth_metric.value,  # type: ignore[reportOptionalMemberAccess]
+            "Node Control/Rebirth must be False in NBIRTH",
+        )
 
         self.edge_node.disconnect()
 
@@ -120,12 +152,22 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         [tck-id-operational-behavior-data-commands-rebirth-action-2]
         """
         # Create a valid rebirth command
-        rebirth_metric = Metric(timestamp=123, name=NODE_CONTROL_REBIRTH, datatype=DataType.BOOLEAN, value=True)
+        rebirth_metric = Metric(
+            timestamp=123,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=True,
+        )
 
-        ncmd_topic = Topic(group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID)  # Correct verb
+        ncmd_topic = Topic(
+            group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID
+        )  # Correct verb
 
         ncmd_message = Message(
-            topic=ncmd_topic, payload=NCmd(timestamp=123, metrics=(rebirth_metric,)), qos=QoS.EXACTLY_ONCE, retain=False
+            topic=ncmd_topic,
+            payload=NCmd(timestamp=123, metrics=(rebirth_metric,)),
+            qos=QoS.EXACTLY_ONCE,
+            retain=False,
         )
 
         # Track published messages
@@ -147,12 +189,17 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         published_msgs = []  # Reset published messages
 
         def send_data_messages():
-            """Simulate sending NDATA messages """
+            """Simulate sending NDATA messages"""
             for i in range(10):
-                data_metric = Metric(timestamp=1234, name="test_edge_node_metric", datatype=DataType.INT32, value=50 + i)
+                data_metric = Metric(
+                    timestamp=1234,
+                    name="test_edge_node_metric",
+                    datatype=DataType.INT32,
+                    value=50 + i,
+                )
                 self.edge_node.update([data_metric])
                 time.sleep(0.1)
-    
+
         # simulate a user thread is sending data messages
         rebirth_thread = threading.Thread(target=send_data_messages)
         rebirth_thread.start()
@@ -163,14 +210,22 @@ class TestEdgeNodeRebirth(unittest.TestCase):
 
         rebirth_thread.join()  # Ensure data sending thread has completed
 
-        birth_msg = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        birth_msg = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         birth_payload = cast(NBirth, birth_msg.payload)
-        bd_seq_metric = next((m for m in birth_payload.metrics if m.name == "bdSeq"), None)
+        bd_seq_metric = next(
+            (m for m in birth_payload.metrics if m.name == "bdSeq"), None
+        )
 
-        self.assertEqual(birth_payload.seq, 0, "NBIRTH must have seq=0 even for rebirth")
-        self.assertEqual(bd_seq_metric.value, 
-                         initial_will_message.payload.bd_seq_metric.value, 
-                         "bdSeq in NBIRTH must match that in the will message even for rebirth")
+        self.assertEqual(
+            birth_payload.seq, 0, "NBIRTH must have seq=0 even for rebirth"
+        )
+        self.assertEqual(
+            bd_seq_metric.value,  # type: ignore[reportOptionalMemberAccess]
+            initial_will_message.payload.bd_seq_metric.value,
+            "bdSeq in NBIRTH must match that in the will message even for rebirth",
+        )
 
         # Verify message sequence
         message_types = [type(msg.payload).__name__ for msg in published_msgs]
@@ -184,8 +239,14 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         if len(birth_indices) > 0:
             first_birth = birth_indices[0]
             last_birth = birth_indices[-1]
-            data_between_births = [i for i in ndata_indices if first_birth <= i <= last_birth]
-            self.assertEqual(len(data_between_births), 0, "No NData messages should occur during Birth sequence")
+            data_between_births = [
+                i for i in ndata_indices if first_birth <= i <= last_birth
+            ]
+            self.assertEqual(
+                len(data_between_births),
+                0,
+                "No NData messages should occur during Birth sequence",
+            )
 
         self.edge_node.disconnect()
 
@@ -195,12 +256,22 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         self.edge_node._rebirth_lock.acquire()
 
         # Create another rebirth command
-        rebirth_metric = Metric(timestamp=123, name=NODE_CONTROL_REBIRTH, datatype=DataType.BOOLEAN, value=True)
+        rebirth_metric = Metric(
+            timestamp=123,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=True,
+        )
 
-        ncmd_topic = Topic(group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID)
+        ncmd_topic = Topic(
+            group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID
+        )
 
         ncmd_message = Message(
-            topic=ncmd_topic, payload=NCmd(timestamp=123, metrics=(rebirth_metric,)), qos=QoS.EXACTLY_ONCE, retain=False
+            topic=ncmd_topic,
+            payload=NCmd(timestamp=123, metrics=(rebirth_metric,)),
+            qos=QoS.EXACTLY_ONCE,
+            retain=False,
         )
 
         # Send rebirth command
@@ -213,16 +284,28 @@ class TestEdgeNodeRebirth(unittest.TestCase):
     def test_invalid_rebirth_command(self):
         """Test handling of invalid rebirth commands"""
         # Test with wrong metric name
-        wrong_name_metric = Metric(timestamp=123, name="wrong_name", datatype=DataType.BOOLEAN, value=True)
+        wrong_name_metric = Metric(
+            timestamp=123, name="wrong_name", datatype=DataType.BOOLEAN, value=True
+        )
 
         # Test with wrong value type
-        wrong_value_metric = Metric(timestamp=123, name=NODE_CONTROL_REBIRTH, datatype=DataType.BOOLEAN, value=False)
+        wrong_value_metric = Metric(
+            timestamp=123,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=False,
+        )
 
-        ncmd_topic = Topic(group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID)
+        ncmd_topic = Topic(
+            group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID
+        )
 
         for metric in [wrong_name_metric, wrong_value_metric]:
             message = Message(
-                topic=ncmd_topic, payload=NCmd(timestamp=123, metrics=(metric,)), qos=QoS.EXACTLY_ONCE, retain=False
+                topic=ncmd_topic,
+                payload=NCmd(timestamp=123, metrics=(metric,)),
+                qos=QoS.EXACTLY_ONCE,
+                retain=False,
             )
 
             self.edge_node._handle_ncmd(message)
@@ -231,12 +314,22 @@ class TestEdgeNodeRebirth(unittest.TestCase):
     def test_rebirth_metrics_preserved(self):
         """Test that metrics are preserved through rebirth process"""
         # Create a rebirth command
-        rebirth_metric = Metric(timestamp=123, name=NODE_CONTROL_REBIRTH, datatype=DataType.BOOLEAN, value=True)
+        rebirth_metric = Metric(
+            timestamp=123,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=True,
+        )
 
-        ncmd_topic = Topic(group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID)
+        ncmd_topic = Topic(
+            group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID
+        )
 
         ncmd_message = Message(
-            topic=ncmd_topic, payload=NCmd(timestamp=123, metrics=(rebirth_metric,)), qos=QoS.EXACTLY_ONCE, retain=False
+            topic=ncmd_topic,
+            payload=NCmd(timestamp=123, metrics=(rebirth_metric,)),
+            qos=QoS.EXACTLY_ONCE,
+            retain=False,
         )
 
         # Track published messages
@@ -258,11 +351,13 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         # Send rebirth command
         self.edge_node._handle_ncmd(ncmd_message)
 
-        while len(published_msgs) < 6: # wait for all birth messages
+        while len(published_msgs) < 6:  # wait for all birth messages
             time.sleep(0.1)
 
         # Find NBirth message
-        birth_msg = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        birth_msg = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
 
         # Verify original metrics are present in birth message
         birth_payload = birth_msg.payload
@@ -290,35 +385,57 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         while self.edge_node._connected is False or len(published_msgs) < 6:
             time.sleep(0.5)
 
-        initial_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        initial_birth = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         initial_birth_payload = cast(NBirth, initial_birth.payload)
-        initial_bdseq = next(m.value for m in initial_birth_payload.metrics if m.name == "bdSeq")
+        initial_bdseq = next(
+            m.value for m in initial_birth_payload.metrics if m.name == "bdSeq"
+        )
         published_msgs.clear()  # Reset for rebirth test
 
         # Create and send rebirth command
-        rebirth_metric = Metric(timestamp=123, name=NODE_CONTROL_REBIRTH, datatype=DataType.BOOLEAN, value=True)
+        rebirth_metric = Metric(
+            timestamp=123,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=True,
+        )
 
-        ncmd_topic = Topic(group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID)
+        ncmd_topic = Topic(
+            group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID
+        )
 
         ncmd_message = Message(
-            topic=ncmd_topic, payload=NCmd(timestamp=123, metrics=(rebirth_metric,)), qos=QoS.EXACTLY_ONCE, retain=False
+            topic=ncmd_topic,
+            payload=NCmd(timestamp=123, metrics=(rebirth_metric,)),
+            qos=QoS.EXACTLY_ONCE,
+            retain=False,
         )
 
         # Send rebirth command
         self.edge_node._handle_ncmd(ncmd_message)
-        while len(published_msgs) < 6: # wait for all birth messages
+        while len(published_msgs) < 6:  # wait for all birth messages
             time.sleep(0.1)
 
         # Find Birth message after rebirth
-        rebirth_msg = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        rebirth_msg = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         rebirth_payload = cast(NBirth, rebirth_msg.payload)
 
         # Get bdSeq after rebirth
-        rebirth_bdseq = next(m.value for m in rebirth_payload.metrics if m.name == "bdSeq")
+        rebirth_bdseq = next(
+            m.value for m in rebirth_payload.metrics if m.name == "bdSeq"
+        )
 
         # Verify bdSeq hasn't changed
 
-        self.assertEqual(rebirth_bdseq, initial_bdseq, "bdSeq must not change during rebirth (no new MQTT session)")
+        self.assertEqual(
+            rebirth_bdseq,
+            initial_bdseq,
+            "bdSeq must not change during rebirth (no new MQTT session)",
+        )
         self.edge_node.disconnect()
 
     def test_bdseq_increment_after_unexpected_disconnect(self):
@@ -330,42 +447,58 @@ class TestEdgeNodeRebirth(unittest.TestCase):
             published_msgs.append(msg)
 
         self.mock_publish.side_effect = track_publish
-        
+
         # Now connect the edge node
         self.edge_node.connect("test.mosquitto.org")
-        
+
         # Wait for connection and initial NBIRTH
-        while self.edge_node._connected is False or len(published_msgs) < 6:  # Wait for initial NBIRTH + 5 DBIRTH
+        while (
+            self.edge_node._connected is False or len(published_msgs) < 6
+        ):  # Wait for initial NBIRTH + 5 DBIRTH
             time.sleep(0.5)
-            
+
         # Get initial bdSeq
-        initial_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        initial_birth = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         initial_birth_payload = cast(NBirth, initial_birth.payload)
-        initial_bdseq = next(m.value for m in initial_birth_payload.metrics if m.name == "bdSeq")
-        
+        initial_bdseq = next(
+            m.value for m in initial_birth_payload.metrics if m.name == "bdSeq"
+        )
+
         published_msgs.clear()  # Reset messages
-        
+
         # Simulate an unexpected disconnection by directly calling the disconnect callback
         self.client._client.on_disconnect(self.client._client, None, 1)  # type: ignore[misc]
         self.client._client.on_connect(self.client._client, None, None, 0)  # type: ignore[misc]
-            
+
         # Wait for auto-reconnect and new NBIRTH
         retries = 0
         max_retries = 10
-        while len(published_msgs) < 6 and retries < max_retries:  # Wait for reconnect NBIRTH + 5 DBIRTH
+        while (
+            len(published_msgs) < 6 and retries < max_retries
+        ):  # Wait for reconnect NBIRTH + 5 DBIRTH
             time.sleep(1)
             retries += 1
-            
+
         self.assertLess(retries, max_retries, "Failed to receive reconnection messages")
-            
+
         # Get new bdSeq
-        new_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        new_birth = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         new_birth_payload = cast(NBirth, new_birth.payload)
-        new_bdseq = next(m.value for m in new_birth_payload.metrics if m.name == "bdSeq")
-        
+        new_bdseq = next(
+            m.value for m in new_birth_payload.metrics if m.name == "bdSeq"
+        )
+
         # Verify bdSeq was incremented
-        self.assertEqual(new_bdseq, initial_bdseq+1, "bdSeq must increment by 1 after unexpected disconnect/reconnect") #type: ignore[comparison-overlap]
-        
+        self.assertEqual(
+            new_bdseq,
+            initial_bdseq + 1,  # type: ignore[reportOperatorIssue]
+            "bdSeq must increment by 1 after unexpected disconnect/reconnect",
+        )
+
         self.edge_node.disconnect()
 
     def test_bdseq_increment_after_disconnect(self):
@@ -380,37 +513,51 @@ class TestEdgeNodeRebirth(unittest.TestCase):
 
         # Connect first time
         self.edge_node.connect("test.mosquitto.org")
-        
+
         # Wait for connection and initial NBIRTH
-        while self.edge_node._connected is False or len(published_msgs) < 6:  # Wait for initial NBIRTH + 5 DBIRTH
+        while (
+            self.edge_node._connected is False or len(published_msgs) < 6
+        ):  # Wait for initial NBIRTH + 5 DBIRTH
             time.sleep(0.5)
-            
+
         # Get initial bdSeq
-        initial_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        initial_birth = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         initial_birth_payload = cast(NBirth, initial_birth.payload)
-        initial_bdseq = next(m.value for m in initial_birth_payload.metrics if m.name == "bdSeq") 
-        
+        initial_bdseq = next(
+            m.value for m in initial_birth_payload.metrics if m.name == "bdSeq"
+        )
+
         # Disconnect
         self.edge_node.disconnect()
         time.sleep(1)  # Wait for disconnect to complete
-        
+
         published_msgs.clear()  # Reset messages
-        
+
         # Reconnect
         self.edge_node.connect("test.mosquitto.org")
-        
+
         # Wait for new connection and NBIRTH
-        while self.edge_node._connected is False  or len(published_msgs) < 6:
+        while self.edge_node._connected is False or len(published_msgs) < 6:
             time.sleep(0.5)
-            
+
         # Get new bdSeq
-        new_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        new_birth = next(
+            msg for msg in published_msgs if isinstance(msg.payload, NBirth)
+        )
         new_birth_payload = cast(NBirth, new_birth.payload)
-        new_bdseq = next(m.value for m in new_birth_payload.metrics if m.name == "bdSeq")
-        
+        new_bdseq = next(
+            m.value for m in new_birth_payload.metrics if m.name == "bdSeq"
+        )
+
         # Verify bdSeq was incremented
-        self.assertEqual(new_bdseq, initial_bdseq+1, "bdSeq must increment by 1 after disconnect/reconnect") #type: ignore[comparison-overlap]
-        
+        self.assertEqual(
+            new_bdseq,
+            initial_bdseq + 1,  # type: ignore[reportOptionalMemberAccess]
+            "bdSeq must increment by 1 after disconnect/reconnect",
+        )
+
         self.edge_node.disconnect()
 
 
@@ -419,21 +566,22 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment before each test"""
-        import paho.mqtt.client as mqtt
 
         self.group_id = f"test_group_{uuid.uuid4().hex[:32]}"  # Unique group ID
         self.edge_node_id = "test_edge_node"
-        
+
         # Create MQTT client for sending commands and receiving messages
         self.mqtt_client = mqtt.Client()
         self.received_messages = []
 
-        def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
+        def on_message(
+            client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+        ) -> None:
             self.received_messages.append(message)
 
         self.mqtt_client.on_message = on_message
         self.mqtt_client.connect("test.mosquitto.org", 1883, 60)
-        
+
         # Subscribe to all relevant topics
         self.mqtt_client.subscribe(f"spBv1.0/{self.group_id}/NBIRTH/#", qos=0)
         self.mqtt_client.subscribe(f"spBv1.0/{self.group_id}/DBIRTH/#", qos=0)
@@ -441,20 +589,36 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
         self.mqtt_client.subscribe(f"spBv1.0/{self.group_id}/DDATA/#", qos=0)
         self.mqtt_client.subscribe(f"spBv1.0/{self.group_id}/NDEATH/#", qos=0)
         self.mqtt_client.subscribe(f"spBv1.0/{self.group_id}/DDEATH/#", qos=0)
-        
+
         self.mqtt_client.loop_start()
 
         # Create Edge Node with metrics
         self.client = Client()
-        self.test_edge_metric = Metric(timestamp=123, name="test_edge_node_metric", datatype=DataType.INT32, value=42)
-        self.edge_node = EdgeNode(group_id=self.group_id, edge_node_id=self.edge_node_id, 
-                                metrics=[self.test_edge_metric], client=self.client)
-        
+        self.test_edge_metric = Metric(
+            timestamp=123,
+            name="test_edge_node_metric",
+            datatype=DataType.INT32,
+            value=42,
+        )
+        self.edge_node = EdgeNode(
+            group_id=self.group_id,
+            edge_node_id=self.edge_node_id,
+            metrics=[self.test_edge_metric],
+            client=self.client,
+        )
+
         # Create and register 5 devices
         for i in range(5):
             device = Device(
                 device_id=f"device_{i}",
-                metrics=[Metric(timestamp=123, name=f"device_{i}_metric", datatype=DataType.INT32, value=i)]
+                metrics=[
+                    Metric(
+                        timestamp=123,
+                        name=f"device_{i}_metric",
+                        datatype=DataType.INT32,
+                        value=i,
+                    )
+                ],
             )
             self.edge_node.register(device)
 
@@ -469,10 +633,9 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
         """Test complete rebirth flow using real MQTT messages"""
         # Connect edge node and wait for initial birth sequence
         self.edge_node.connect("test.mosquitto.org", keepalive=120)
-        
-        while len(self.received_messages) < 6:  # Wait for 1 NBIRTH + 5 DBIRTH
-            time.sleep(0.2)  
 
+        while len(self.received_messages) < 6:  # Wait for 1 NBIRTH + 5 DBIRTH
+            time.sleep(0.2)
 
         # Clear received messages
         self.received_messages.clear()
@@ -481,34 +644,30 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
         ncmd_topic = Topic(
             group_id=self.group_id,
             message_type=MessageType.NCMD,
-            edge_node_id=self.edge_node_id
+            edge_node_id=self.edge_node_id,
         )
         rebirth_metric = Metric(
             timestamp=int(time.time() * 1000),
             name="Node Control/Rebirth",
             datatype=DataType.BOOLEAN,
-            value=True
+            value=True,
         )
         ncmd_payload = NCmd(
-            timestamp=int(time.time() * 1000),
-            metrics=(rebirth_metric,)
+            timestamp=int(time.time() * 1000), metrics=(rebirth_metric,)
         )
         message = Message(
-            topic=ncmd_topic,
-            payload=ncmd_payload,
-            qos=QoS.EXACTLY_ONCE,
-            retain=False
+            topic=ncmd_topic, payload=ncmd_payload, qos=QoS.EXACTLY_ONCE, retain=False
         )
-        
+
         self.mqtt_client.publish(
             topic=str(message.topic),
             payload=message.payload.encode(include_dtypes=True),
             qos=message.qos.value,
-            retain=message.retain
+            retain=message.retain,
         )
-        
+
         while len(self.received_messages) < 6:  # Wait for 1 NBIRTH + 5 DBIRTH
-            time.sleep(0.2)  
+            time.sleep(0.2)
 
         proc_msgs = []
         nbirth = 0
@@ -516,11 +675,11 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
         for msg in self.received_messages:
             proc_msg = self.client._handle_message(msg)
             proc_msgs.append(proc_msg)
-            if "NBIRTH" in str(proc_msg.topic) :
+            if "NBIRTH" in str(proc_msg.topic):
                 nbirth += 1
             elif "DBIRTH" in str(proc_msg.topic):
                 dbirth += 1
-        
+
         # Should have 1 NBIRTH and 5 DBIRTH messages
         self.assertEqual(nbirth, 1)
         self.assertEqual(dbirth, 5)

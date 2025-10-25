@@ -18,7 +18,7 @@ from pysparkplug._datatype import DataType
 from pysparkplug._enums import ErrorCode, MessageType, QoS
 from pysparkplug._message import Message
 from pysparkplug._metric import Metric
-from pysparkplug._payload import DBirth, DData, DDeath, NBirth, NData, NDeath, NCmd
+from pysparkplug._payload import DBirth, DData, DDeath, NBirth, NCmd, NData, NDeath
 from pysparkplug._time import get_current_timestamp
 from pysparkplug._topic import Topic
 from pysparkplug._types import Self
@@ -62,7 +62,7 @@ class EdgeNode:
 
     _bd_seq_metric: Metric
     _rebirth_metric: Metric
-    _birthseq_lock: threading.Lock    
+    _birthseq_lock: threading.Lock
     _rebirth_lock: threading.Lock
     __seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     __bd_seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
@@ -92,7 +92,8 @@ class EdgeNode:
         )
 
         def cb(
-            _: EdgeNode, message: Message,
+            _: EdgeNode,
+            message: Message,
         ) -> None:
             self._handle_ncmd(message)
             cmd_callback(self, message)
@@ -186,7 +187,10 @@ class EdgeNode:
 
         def disconnect_callback(client: Client, error_code: ErrorCode) -> None:
             self._connected = False
-            if error_code != ErrorCode.SUCCESS and self._client.client_options.reconnect_on_failure:
+            if (
+                error_code != ErrorCode.SUCCESS
+                and self._client.client_options.reconnect_on_failure
+            ):
                 # Disconnected unexpectectly setup will for next connection
                 self._setup_will()
 
@@ -202,7 +206,7 @@ class EdgeNode:
 
     def _birth(self) -> None:
         """Perform a node birth sequence by publishing NBIRTH and DBIRTH messages"""
-        
+
         if not self._connected:
             # not connected, cannot publish birth messages
             return
@@ -268,10 +272,10 @@ class EdgeNode:
         logger.info(f"Received NCMD message: {message}")
 
         # Check for rebirth command
-        for metric in message.payload.metrics:  # type: ignore[attr-defined]
+        for metric in message.payload.metrics:
             if (
-                metric.name == NODE_CONTROL_REBIRTH  
-                and metric.value is True 
+                metric.name == NODE_CONTROL_REBIRTH
+                and metric.value is True
                 and not self._rebirth_lock.locked()
             ):
                 # This is the network thread so we spawn a new thread to handle rebirth
@@ -283,7 +287,7 @@ class EdgeNode:
         """Perform a node rebirth using the same bdSeq as the original birth"""
 
         # there could be multiple rebirth commands received in quick succession,
-        # so we use a lock to ensure only one rebirth happens at a time and we 
+        # so we use a lock to ensure only one rebirth happens at a time and we
         # ignore the rest
         if self._rebirth_lock.acquire(blocking=False):
             try:
@@ -292,7 +296,9 @@ class EdgeNode:
             finally:
                 self._rebirth_lock.release()
         else:
-            logger.info("Rebirth already in progress, ignoring additional rebirth command")
+            logger.info(
+                "Rebirth already in progress, ignoring additional rebirth command"
+            )
             return
 
     def disconnect(self) -> None:
@@ -485,7 +491,9 @@ class EdgeNode:
                 timestamp=get_current_timestamp(), seq=self._seq, metrics=tuple(metrics)
             )
             self._client.publish(
-                Message(topic=topic, payload=n_data, qos=QoS.AT_MOST_ONCE, retain=False),
+                Message(
+                    topic=topic, payload=n_data, qos=QoS.AT_MOST_ONCE, retain=False
+                ),
                 include_dtypes=True,
             )
 
@@ -513,10 +521,15 @@ class EdgeNode:
                 edge_node_id=self.edge_node_id,
                 device_id=device_id,
             )
-            d_data = DData(get_current_timestamp(), seq=self._seq, metrics=tuple(metrics))
+            d_data = DData(
+                get_current_timestamp(), seq=self._seq, metrics=tuple(metrics)
+            )
             self._client.publish(
                 Message(
-                    topic=d_data_topic, payload=d_data, qos=QoS.AT_MOST_ONCE, retain=False
+                    topic=d_data_topic,
+                    payload=d_data,
+                    qos=QoS.AT_MOST_ONCE,
+                    retain=False,
                 ),
                 include_dtypes=True,
             )

@@ -60,5 +60,7 @@ class Message:
         )
 
     def __str__(self) -> str:
-        return (f"Message(topic={self.topic}, " 
-                f"qos={self.qos}, retain={self.retain}, payload={self.payload})")
+        return (
+            f"Message(topic={self.topic}, "
+            f"qos={self.qos}, retain={self.retain}, payload={self.payload})"
+        )
