@@ -18,6 +18,7 @@ import threading
 import time
 import unittest
 import uuid
+import warnings
 
 logger = logging.getLogger(__name__)
 from typing import Any, cast
@@ -28,7 +29,7 @@ import paho.mqtt.client as mqtt
 from pysparkplug._client import Client
 from pysparkplug._datatype import DataType
 from pysparkplug._edge_node import NODE_CONTROL_REBIRTH, Device, EdgeNode
-from pysparkplug._enums import MessageType, QoS
+from pysparkplug._enums import MessageType, QoS, ErrorCode
 from pysparkplug._message import Message
 from pysparkplug._metric import Metric
 from pysparkplug._payload import NBirth, NCmd
@@ -314,6 +315,70 @@ class TestEdgeNodeRebirth(unittest.TestCase):
             self.edge_node._handle_ncmd(message)
             self.mock_publish.assert_not_called()
 
+    def test_duplicate_rebirth_message_handling(self):
+        """Test that duplicate rebirth messages with same timestamp are ignored"""
+        # Track published messages
+        published_msgs: list[Message] = []
+
+        def track_publish(msg: Message, **kwargs: Any) -> None:
+            published_msgs.append(msg)
+
+        self.mock_publish.side_effect = track_publish
+
+        # Connect edge node to trigger initial NBIRTH
+        self.edge_node.connect("test.mosquitto.org")
+        # Wait for connection to establish and initial NBIRTH to complete
+        while self.edge_node._connected is False or len(published_msgs) != 6:
+            time.sleep(0.5)
+
+        published_msgs.clear()  # Reset published messages
+
+        # Create a rebirth command
+        timestamp = 12345
+        rebirth_metric = Metric(
+            timestamp=timestamp,
+            name=NODE_CONTROL_REBIRTH,
+            datatype=DataType.BOOLEAN,
+            value=True,
+        )
+
+        ncmd_topic = Topic(
+            group_id=GROUP_ID, message_type=MessageType.NCMD, edge_node_id=EDGE_NODE_ID
+        )
+
+        ncmd_message = Message(
+            topic=ncmd_topic,
+            payload=NCmd(timestamp=timestamp, metrics=(rebirth_metric,)),
+            qos=QoS.AT_LEAST_ONCE,
+            retain=False,
+        )
+
+        # Send first rebirth command
+        self.edge_node._handle_ncmd(ncmd_message)
+
+        # Wait for first rebirth sequence to complete
+        while len(published_msgs) != 6:  # wait for NBIRTH + 5 DBIRTH messages
+            time.sleep(0.1)
+
+        # Store number of messages from first rebirth
+        first_rebirth_msg_count = len(published_msgs)
+        published_msgs = []
+
+        # Send duplicate rebirth command with same timestamp
+        self.edge_node._handle_ncmd(ncmd_message)
+
+        # Give some time for any potential messages
+        time.sleep(1)
+
+        # Verify no new messages were published for duplicate rebirth
+        self.assertEqual(
+            len(published_msgs),
+            0,
+            "Duplicate rebirth message should be ignored and not trigger new birth sequence",
+        )
+
+        self.edge_node.disconnect()
+
     def test_rebirth_metrics_preserved(self):
         """Test that metrics are preserved through rebirth process"""
         # Create a rebirth command
@@ -471,9 +536,18 @@ class TestEdgeNodeRebirth(unittest.TestCase):
 
         published_msgs.clear()  # Reset messages
 
-        # Simulate an unexpected disconnection by directly calling the disconnect callback
-        self.client._client.on_disconnect(self.client._client, None, 1)  # type: ignore[misc]
-        self.client._client.on_connect(self.client._client, None, None, 0)  # type: ignore[misc]
+        # Suppress expected warning about unexpected disconnect
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="Unexpected disconnect: The connection was lost"
+            )
+            # Simulate an unexpected disconnection by directly calling the disconnect callback
+            self.client._client.on_disconnect(
+                self.client._client, None, ErrorCode.CONN_LOST
+            )  # type: ignore[misc]
+        self.client._client.on_connect(
+            self.client._client, None, None, ErrorCode.SUCCESS
+        )  # type: ignore[misc]
 
         # Wait for auto-reconnect and new NBIRTH
         retries = 0

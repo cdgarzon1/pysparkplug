@@ -64,6 +64,7 @@ class EdgeNode:
     _rebirth_metric: Metric
     _birthseq_lock: threading.Lock
     _rebirth_lock: threading.Lock
+    _last_rebirth_timestamp: Optional[int] = None
     __seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     __bd_seq_cycler: itertools.cycle[int] = itertools.cycle(range(SEQ_LIMIT))
     _connected: bool = False
@@ -83,6 +84,7 @@ class EdgeNode:
         self._client = client if client is not None else Client()
         self._birthseq_lock = threading.Lock()
         self._rebirth_lock = threading.Lock()
+        self._last_rebirth_timestamp = None
 
         # Subscribe to NCMD
         n_cmd_topic = Topic(
@@ -278,7 +280,13 @@ class EdgeNode:
                 metric.name == NODE_CONTROL_REBIRTH
                 and metric.value is True
                 and not self._rebirth_lock.locked()
+                and (
+                    self._last_rebirth_timestamp is None
+                    or message.payload.timestamp != self._last_rebirth_timestamp
+                )
             ):
+                # save the timestamp of this rebirth to avoid processing duplicates
+                self._last_rebirth_timestamp = message.payload.timestamp
                 # This is the network thread so we spawn a new thread to handle rebirth
                 rebirth_thread = threading.Thread(target=self._rebirth)
                 rebirth_thread.start()
