@@ -211,6 +211,7 @@ class EdgeNode:
             # not connected, cannot publish birth messages
             return
         with self._birthseq_lock:
+            logger.info(f"{self.edge_node_id}: Performing birth sequence")
             # Reset seq cycler
             self.__seq_cycler = itertools.cycle(range(SEQ_LIMIT))
 
@@ -269,7 +270,7 @@ class EdgeNode:
             logger.error(f"Received invalid NCMD payload type: {type(message.payload)}")
             return
 
-        logger.info(f"Received NCMD message: {message}")
+        logger.info(f"{self.edge_node_id}: Received NCMD message: {message}")
 
         # Check for rebirth command
         for metric in message.payload.metrics:
@@ -290,6 +291,7 @@ class EdgeNode:
         # so we use a lock to ensure only one rebirth happens at a time and we
         # ignore the rest
         if self._rebirth_lock.acquire(blocking=False):
+            logger.info(f"{self.edge_node_id}: Performing rebirth sequence")
             try:
                 if self._connected:
                     self._birth()

@@ -12,11 +12,14 @@ Key specification requirements tested:
 - bdSeq must remain unchanged in new NBIRTH
 """
 
+import logging
 import random
 import threading
 import time
 import unittest
 import uuid
+
+logger = logging.getLogger(__name__)
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -578,6 +581,7 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
             client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
         ) -> None:
             self.received_messages.append(message)
+            logger.info("Test Receiver: Received message on topic %s", message.topic)
 
         self.mqtt_client.on_message = on_message
         self.mqtt_client.connect("test.mosquitto.org", 1883, 60)
@@ -632,13 +636,34 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
     def test_rebirth_flow_with_real_mqtt(self):
         """Test complete rebirth flow using real MQTT messages"""
         # Connect edge node and wait for initial birth sequence
+        logger.info("Connecting edge node...")
         self.edge_node.connect("test.mosquitto.org", keepalive=120)
 
-        while len(self.received_messages) < 6:  # Wait for 1 NBIRTH + 5 DBIRTH
-            time.sleep(0.2)
+        # Wait for initial birth sequence to complete and ensure we're stable
+        initial_msg_count = 0
+        retry_count = 0
+        max_retries = 10
 
-        # Clear received messages
-        self.received_messages.clear()
+        while retry_count < max_retries:
+            time.sleep(0.5)  # Longer delay for stability
+            current_count = len(self.received_messages)
+            logger.info(
+                "Current message count: %d, Previous count: %d",
+                current_count,
+                initial_msg_count,
+            )
+
+            if current_count >= 6 and current_count == initial_msg_count:
+                logger.info("Message count has stabilized at %d", current_count)
+                break  # Message count has stabilized
+
+            initial_msg_count = current_count
+            retry_count += 1
+
+        # Clear all messages after initial birth sequence
+        logger.info("Clearing %d initial messages", len(self.received_messages))
+        self.received_messages = []
+        time.sleep(1.0)  # Longer stability delay
 
         # Create and send rebirth command using proper Sparkplug B encoding
         ncmd_topic = Topic(
@@ -666,9 +691,23 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
             retain=message.retain,
         )
 
-        while len(self.received_messages) < 6:  # Wait for 1 NBIRTH + 5 DBIRTH
-            time.sleep(0.2)
+        retry_count = 0
+        max_retries = 10
+        while retry_count < max_retries:
+            time.sleep(0.5)
+            current_count = len(self.received_messages)
+            logger.info(
+                "Waiting for rebirth messages. Current count: %d", current_count
+            )
 
+            if current_count >= 6:  # We have our expected messages
+                break
+
+            retry_count += 1
+
+        logger.info(
+            "Processing %d messages after rebirth command", len(self.received_messages)
+        )
         proc_msgs = []
         nbirth = 0
         dbirth = 0
@@ -677,9 +716,9 @@ class TestEdgeNodeRebirthWithRealMQTT(unittest.TestCase):
             proc_msgs.append(proc_msg)
             if "NBIRTH" in str(proc_msg.topic):
                 nbirth += 1
+                logger.debug("Found NBIRTH message: %s", proc_msg)
             elif "DBIRTH" in str(proc_msg.topic):
                 dbirth += 1
-
-        # Should have 1 NBIRTH and 5 DBIRTH messages
+                logger.debug("Found DBIRTH message: %s", proc_msg)
         self.assertEqual(nbirth, 1)
         self.assertEqual(dbirth, 5)
