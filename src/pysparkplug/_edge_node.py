@@ -15,7 +15,7 @@ from pysparkplug._constants import (
     DEFAULT_CLIENT_PORT,
 )
 from pysparkplug._datatype import DataType
-from pysparkplug._enums import MessageType, QoS
+from pysparkplug._enums import ErrorCode, MessageType, QoS
 from pysparkplug._message import Message
 from pysparkplug._metric import Metric
 from pysparkplug._payload import DBirth, DData, DDeath, NBirth, NData, NDeath, NCmd
@@ -61,7 +61,6 @@ class EdgeNode:
     _client: Client
 
     _bd_seq_metric: Metric
-    _active_bd_seq_metric: Metric  # Preserve the active birth bdSeq
     _rebirth_metric: Metric
     _birthseq_lock: threading.Lock    
     _rebirth_lock: threading.Lock
@@ -180,16 +179,16 @@ class EdgeNode:
 
         # Setup will for next connection
         self._setup_will()
-        self._active_bd_seq_metric = self._bd_seq_metric
 
-        def callback(client: Client) -> None:
+        def connect_callback(client: Client) -> None:
             self._connected = True
-
-            self._active_bd_seq_metric = self._bd_seq_metric
             self._birth()
 
-            # Setup will for next connection
-            self._setup_will()
+        def disconnect_callback(client: Client, error_code: ErrorCode) -> None:
+            self._connected = False
+            if error_code != ErrorCode.SUCCESS and self._client.client_options.reconnect_on_failure:
+                # Disconnected unexpectectly setup will for next connection
+                self._setup_will()
 
         self._client.connect(
             host,
@@ -197,7 +196,8 @@ class EdgeNode:
             keepalive=keepalive,
             bind_address=bind_address,
             blocking=blocking,
-            callback=callback,
+            connect_callback=connect_callback,
+            disconnect_callback=disconnect_callback,
         )
 
     def _birth(self) -> None:
@@ -216,7 +216,7 @@ class EdgeNode:
                 group_id=self.group_id,
                 edge_node_id=self.edge_node_id,
             )
-            metrics = (*self._metrics.values(), self._active_bd_seq_metric)
+            metrics = (*self._metrics.values(), self._bd_seq_metric)
             n_birth = NBirth(
                 timestamp=get_current_timestamp(), seq=self._seq, metrics=metrics
             )
@@ -304,7 +304,7 @@ class EdgeNode:
                 edge_node_id=self.edge_node_id,
             )
             n_death = NDeath(
-                timestamp=get_current_timestamp(), bd_seq_metric=self._active_bd_seq_metric
+                timestamp=get_current_timestamp(), bd_seq_metric=self._bd_seq_metric
             )
             ndeath_message = Message(
                 topic=n_death_topic, payload=n_death, qos=QoS.AT_MOST_ONCE, retain=False

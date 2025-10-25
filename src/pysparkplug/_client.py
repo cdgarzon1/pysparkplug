@@ -55,6 +55,7 @@ class Client:
         transport_config: Optional[Union[TLSConfig, WSConfig]] = None,
         client_options: ClientOptions = ClientOptions(),
     ) -> None:
+        self.client_options = client_options
         self._client = paho_mqtt.Client(
             client_id=client_id,  # type: ignore[reportArgumentType]
             clean_session=True,
@@ -124,7 +125,8 @@ class Client:
         keepalive: int = DEFAULT_CLIENT_KEEPALIVE,
         bind_address: str = DEFAULT_CLIENT_BIND_ADDRESS,
         blocking: bool = DEFAULT_CLIENT_BLOCKING,
-        callback: Optional[Callable[[Self], None]] = None,
+        connect_callback: Optional[Callable[[Self], None]] = None,
+        disconnect_callback: Optional[Callable[[Self, ErrorCode], None]] = None,
     ) -> None:
         """Connect client to the broker
 
@@ -139,21 +141,33 @@ class Client:
                 the IP address of a local network interface to bind this client to, assuming multiple interfaces exist
             blocking:
                 whether or not to connect in a blocking way, or connect with a separate thread
-            callback:
+            connect_callback:
                 a custom callback to be called each time the client successfully connects
+            disconnect_callback:
+                a custom callback to be called each time the client disconnects
         """
 
-        def cb(
+        def con_cb(
             _client: paho_mqtt.Client,
             _userdata: dict[Any, Any],
             _flags: dict[Any, Any],
             rc: int,
         ) -> None:
             self._on_connect(rc)
-            if callback is not None:
-                callback(self)
+            if connect_callback is not None:
+                connect_callback(self)
 
-        self._client.on_connect = cb
+        def dis_con(
+            _client: paho_mqtt.Client,
+            _userdata: dict[Any, Any],
+            rc: int,
+        ) -> None:
+            self._on_disconnect(rc)
+            if disconnect_callback is not None:
+                disconnect_callback(self, ErrorCode(rc))
+
+        self._client.on_connect = con_cb
+        self._client.on_disconnect = dis_con
         self._client.connect(
             host=host,
             port=port,
@@ -170,6 +184,12 @@ class Client:
         self._births.clear()
         for topic, qos in list(self._subscriptions.items()):
             self._subscribe(topic=topic, qos=qos)
+
+    def _on_disconnect(self, rc: int) -> None:
+        if ErrorCode(rc) != ErrorCode.SUCCESS: 
+            logger.warning(f"Unexpected disconnect: {ErrorCode(rc)}")
+        else:
+            logger.info("Clean disconnect")
 
     def disconnect(self) -> None:
         """Disconnect from the broker cleanly, i.e. results in no
