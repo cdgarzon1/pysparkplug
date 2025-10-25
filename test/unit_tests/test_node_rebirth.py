@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 from typing import Any, cast
+import paho.mqtt.client as mqtt
 from unittest.mock import MagicMock, patch
 
 from pysparkplug._client import Client
@@ -320,6 +321,52 @@ class TestEdgeNodeRebirth(unittest.TestCase):
         self.assertEqual(rebirth_bdseq, initial_bdseq, "bdSeq must not change during rebirth (no new MQTT session)")
         self.edge_node.disconnect()
 
+    def test_bdseq_increment_after_unexpected_disconnect(self):
+        """Test that bdSeq is incremented after unexpected disconnection and auto-reconnect"""
+        # Track published messages
+        published_msgs: list[Message] = []
+
+        def track_publish(msg: Message, **kwargs: Any) -> None:
+            published_msgs.append(msg)
+
+        self.mock_publish.side_effect = track_publish
+        
+        # Now connect the edge node
+        self.edge_node.connect("test.mosquitto.org")
+        
+        # Wait for connection and initial NBIRTH
+        while self.edge_node._connected is False or len(published_msgs) < 6:  # Wait for initial NBIRTH + 5 DBIRTH
+            time.sleep(0.5)
+            
+        # Get initial bdSeq
+        initial_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        initial_birth_payload = cast(NBirth, initial_birth.payload)
+        initial_bdseq = next(m.value for m in initial_birth_payload.metrics if m.name == "bdSeq")
+        
+        published_msgs.clear()  # Reset messages
+        
+        # Simulate an unexpected disconnection by directly calling the disconnect callback
+        self.client._client.on_disconnect(self.client._client, None, 1)  # type: ignore[misc]
+        self.client._client.on_connect(self.client._client, None, None, 0)  # type: ignore[misc]
+            
+        # Wait for auto-reconnect and new NBIRTH
+        retries = 0
+        max_retries = 10
+        while len(published_msgs) < 6 and retries < max_retries:  # Wait for reconnect NBIRTH + 5 DBIRTH
+            time.sleep(1)
+            retries += 1
+            
+        self.assertLess(retries, max_retries, "Failed to receive reconnection messages")
+            
+        # Get new bdSeq
+        new_birth = next(msg for msg in published_msgs if isinstance(msg.payload, NBirth))
+        new_birth_payload = cast(NBirth, new_birth.payload)
+        new_bdseq = next(m.value for m in new_birth_payload.metrics if m.name == "bdSeq")
+        
+        # Verify bdSeq was incremented
+        self.assertEqual(new_bdseq, initial_bdseq+1, "bdSeq must increment by 1 after unexpected disconnect/reconnect") #type: ignore[comparison-overlap]
+        
+        self.edge_node.disconnect()
 
     def test_bdseq_increment_after_disconnect(self):
         """Test that bdSeq is incremented after disconnect and reconnect"""

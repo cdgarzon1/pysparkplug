@@ -157,7 +157,7 @@ class Client:
             if connect_callback is not None:
                 connect_callback(self)
 
-        def dis_con(
+        def discon_cb(
             _client: paho_mqtt.Client,
             _userdata: dict[Any, Any],
             rc: int,
@@ -167,7 +167,7 @@ class Client:
                 disconnect_callback(self, ErrorCode(rc))
 
         self._client.on_connect = con_cb
-        self._client.on_disconnect = dis_con
+        self._client.on_disconnect = discon_cb
         self._client.connect(
             host=host,
             port=port,
