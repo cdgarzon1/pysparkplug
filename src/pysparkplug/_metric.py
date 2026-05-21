@@ -5,6 +5,7 @@ from typing import Optional
 
 from pysparkplug._datatype import DataType
 from pysparkplug._metadata import Metadata
+from pysparkplug._properties import PropertySet
 from pysparkplug._protobuf import Metric as PB_Metric
 from pysparkplug._types import MetricValue, Self
 
@@ -34,12 +35,16 @@ class Metric:
             if this is null - explicitly say so rather than using -1, false, etc
         metadata:
             optional metadata for this metric
+        properties:
+            optional PropertySet of key/value pairs describing properties of
+            this metric (e.g. engineering units, display hints)
     """
 
     timestamp: Optional[int]
     name: Optional[str]
     datatype: DataType
     metadata: Optional[Metadata] = None
+    properties: Optional[PropertySet] = None
     value: Optional[MetricValue] = None
     alias: Optional[int] = None
     is_historical: bool = False
@@ -62,6 +67,8 @@ class Metric:
             metric.datatype = self.datatype
         if self.metadata is not None:
             metric.metadata.CopyFrom(self.metadata.to_pb())
+        if self.properties is not None:
+            metric.properties.CopyFrom(self.properties.to_pb())
         if self.alias is not None:
             metric.alias = self.alias
         if self.is_historical:
@@ -103,5 +110,9 @@ class Metric:
             # Check and extract metadata if present
             metadata=Metadata.from_pb(metric.metadata)
             if metric.HasField("metadata")
+            else None,
+            # Check and extract properties if present
+            properties=PropertySet.from_pb(metric.properties)
+            if metric.HasField("properties")
             else None,
         )

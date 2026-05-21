@@ -28,12 +28,20 @@ from pysparkplug._payload import (
     NDeath,
     State,
 )
+from pysparkplug._properties import (
+    QUALITY_KEY,
+    PropertySet,
+    PropertySetList,
+    PropertyValue,
+    QualityCode,
+)
 from pysparkplug._time import get_current_timestamp
 from pysparkplug._topic import Topic
 from pysparkplug._version import __version__
 
 __all__ = [
     "MULTI_LEVEL_WILDCARD",
+    "QUALITY_KEY",
     "SINGLE_LEVEL_WILDCARD",
     "Client",
     "ClientOptions",
@@ -57,7 +65,11 @@ __all__ = [
     "NCmd",
     "NData",
     "NDeath",
+    "PropertySet",
+    "PropertySetList",
+    "PropertyValue",
     "QoS",
+    "QualityCode",
     "State",
     "TLSConfig",
     "Topic",

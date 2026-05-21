@@ -19,8 +19,6 @@ import time
 import unittest
 import uuid
 import warnings
-
-logger = logging.getLogger(__name__)
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -29,7 +27,7 @@ import paho.mqtt.client as mqtt
 from pysparkplug._client import Client
 from pysparkplug._datatype import DataType
 from pysparkplug._edge_node import NODE_CONTROL_REBIRTH, Device, EdgeNode
-from pysparkplug._enums import MessageType, QoS, ErrorCode
+from pysparkplug._enums import ErrorCode, MessageType, QoS
 from pysparkplug._message import Message
 from pysparkplug._metric import Metric
 from pysparkplug._payload import NBirth, NCmd
@@ -37,6 +35,8 @@ from pysparkplug._topic import Topic
 
 GROUP_ID = "test_group"
 EDGE_NODE_ID = "test_edge_node"
+
+logger = logging.getLogger(__name__)
 
 
 class TestEdgeNodeRebirth(unittest.TestCase):
@@ -361,7 +361,7 @@ class TestEdgeNodeRebirth(unittest.TestCase):
             time.sleep(0.1)
 
         # Store number of messages from first rebirth
-        first_rebirth_msg_count = len(published_msgs)
+        _first_rebirth_msg_count = len(published_msgs)
         published_msgs = []
 
         # Send duplicate rebirth command with same timestamp
